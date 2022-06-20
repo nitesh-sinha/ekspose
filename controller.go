@@ -7,6 +7,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	netv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	appsv1informers "k8s.io/client-go/informers/apps/v1"
@@ -113,12 +114,56 @@ func (c *controller) processDeployment(ns, depName string) error {
 			},
 		},
 	}
-	_, err = c.clientset.CoreV1().Services(ns).Create(ctx, &svc, metav1.CreateOptions{})
+	createdSvc, err := c.clientset.CoreV1().Services(ns).Create(ctx, &svc, metav1.CreateOptions{})
 	if err != nil {
 		fmt.Println("Error creating service for the deployment: ", err.Error())
 	}
 	// create the corresponding ingress
+	err = createIngress(ctx, c.clientset, createdSvc)
+	if err != nil {
+		fmt.Println("Error creating ingress: ", err.Error())
+	}
 	return nil
+}
+
+func createIngress(ctx context.Context, client kubernetes.Interface, svc *corev1.Service) error {
+	pathType := "Prefix"
+	ingress := netv1.Ingress{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      svc.Name,
+			Namespace: svc.Namespace,
+			Annotations: map[string]string{
+				"nginx.ingress.kubernetes.io/rewrite-target": "/",
+				"kubernetes.io/ingress.class":                "nginx",
+			},
+		},
+		Spec: netv1.IngressSpec{
+			Rules: []netv1.IngressRule{
+				netv1.IngressRule{
+					IngressRuleValue: netv1.IngressRuleValue{
+						HTTP: &netv1.HTTPIngressRuleValue{
+							Paths: []netv1.HTTPIngressPath{
+								netv1.HTTPIngressPath{
+									Path:     fmt.Sprintf("/%s", svc.Name),
+									PathType: (*netv1.PathType)(&pathType),
+									Backend: netv1.IngressBackend{
+										Service: &netv1.IngressServiceBackend{
+											Name: svc.Name,
+											Port: netv1.ServiceBackendPort{
+												Number: 80,
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	_, err := client.NetworkingV1().Ingresses(svc.Namespace).Create(ctx, &ingress, metav1.CreateOptions{})
+	return err
 }
 
 func getDepLabels(dep *appsv1.Deployment) map[string]string {
